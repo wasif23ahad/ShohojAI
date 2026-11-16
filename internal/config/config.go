@@ -2,6 +2,7 @@
 package config
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -44,9 +45,49 @@ type Config struct {
 	LLMEmbeddingModel   string
 }
 
-// Load reads configuration from the process environment and validates all required fields.
+// Load reads configuration from ".env" (if present) and the process environment,
+// with process environment variables taking precedence over ".env".
 func Load() (*Config, error) {
-	return LoadFromLookup(os.LookupEnv)
+	dotEnvMap := parseDotEnvFile(".env")
+	lookup := func(key string) (string, bool) {
+		if val, ok := os.LookupEnv(key); ok {
+			return val, true
+		}
+		if val, ok := dotEnvMap[key]; ok {
+			return val, true
+		}
+		return "", false
+	}
+	return LoadFromLookup(lookup)
+}
+
+func parseDotEnvFile(path string) map[string]string {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer func() { _ = f.Close() }()
+
+	res := make(map[string]string)
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		line = strings.TrimPrefix(line, "export ")
+		idx := strings.IndexByte(line, '=')
+		if idx <= 0 {
+			continue
+		}
+		key := strings.TrimSpace(line[:idx])
+		val := strings.TrimSpace(line[idx+1:])
+		if len(val) >= 2 && ((val[0] == '"' && val[len(val)-1] == '"') || (val[0] == '\'' && val[len(val)-1] == '\'')) {
+			val = val[1 : len(val)-1]
+		}
+		res[key] = val
+	}
+	return res
 }
 
 // LoadFromLookup reads configuration using the provided lookup function and validates it.
