@@ -224,6 +224,13 @@ func (h *Handler) ingestMessagingEvent(ctx context.Context, ev MessagingEvent) {
 	}
 }
 
+// ComputeSignature returns the "sha256=<hex>" HMAC-SHA256 signature for a webhook payload body.
+func ComputeSignature(body []byte, secret []byte) string {
+	mac := hmac.New(sha256.New, secret)
+	_, _ = mac.Write(body)
+	return signaturePrefix + hex.EncodeToString(mac.Sum(nil))
+}
+
 // VerifySignature validates X-Hub-Signature-256 ("sha256=<hex>") against HMAC-SHA256(body, secret)
 // using constant-time hmac.Equal per AGENTS.md Rule #4.
 func VerifySignature(body []byte, sigHeader string, secret []byte) bool {

@@ -358,18 +358,8 @@ func (e *ToolExecutor) execEscalateToHuman(ctx context.Context, sessionSenderID 
 		reason = "customer requested human support"
 	}
 
-	if e.redisStore != nil {
-		if err := e.redisStore.SetBotPaused(ctx, senderID, true); err != nil {
-			return "", fmt.Errorf("agent: pause bot in redis for %s: %w", senderID, err)
-		}
-	}
-	if e.pgStore != nil {
-		if err := e.pgStore.SetCustomerBotPaused(ctx, senderID, true); err != nil {
-			e.logger.Warn("failed updating customer bot_paused flag in postgres",
-				"sender_id", senderID,
-				"err", err,
-			)
-		}
+	if err := store.SyncBotPauseState(ctx, e.redisStore, e.pgStore, senderID, true, e.logger); err != nil {
+		return "", fmt.Errorf("agent: pause bot for %s: %w", senderID, err)
 	}
 
 	e.logger.Warn("thread escalated to human operator",

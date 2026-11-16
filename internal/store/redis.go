@@ -201,3 +201,41 @@ func (r *RedisStore) ClearChatHistory(ctx context.Context, senderID string) erro
 	}
 	return nil
 }
+
+// RedisPauseSetter updates the bot:paused:{sender_id} flag in Redis.
+type RedisPauseSetter interface {
+	SetBotPaused(ctx context.Context, senderID string, paused bool) error
+}
+
+// PostgresPauseSetter updates the customers.bot_paused column in PostgreSQL.
+type PostgresPauseSetter interface {
+	SetCustomerBotPaused(ctx context.Context, senderID string, paused bool) error
+}
+
+// SyncBotPauseState updates the thread pause state in Redis (primary fast check)
+// and synchronizes the flag to PostgreSQL (logging a warning if Postgres fails).
+func SyncBotPauseState(
+	ctx context.Context,
+	redisStore RedisPauseSetter,
+	pgStore PostgresPauseSetter,
+	senderID string,
+	paused bool,
+	logger *slog.Logger,
+) error {
+	if redisStore != nil {
+		if err := redisStore.SetBotPaused(ctx, senderID, paused); err != nil {
+			return fmt.Errorf("store: set redis bot paused for %s: %w", senderID, err)
+		}
+	}
+	if pgStore != nil {
+		if err := pgStore.SetCustomerBotPaused(ctx, senderID, paused); err != nil && logger != nil {
+			logger.Warn("failed synchronizing bot_paused flag in postgres",
+				"sender_id", senderID,
+				"paused", paused,
+				"err", err,
+			)
+		}
+	}
+	return nil
+}
+

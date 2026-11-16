@@ -531,7 +531,10 @@ func (w *wireHandler) Query(ctx context.Context, sql string, args ...any) (pgx.R
 }
 
 func (w *wireHandler) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
-	rows, err := w.Query(ctx, sql, args...)
+	return querySingleRow(w.Query(ctx, sql, args...))
+}
+
+func querySingleRow(rows pgx.Rows, err error) pgx.Row {
 	if err != nil {
 		return NewErrorRow(err)
 	}
@@ -605,22 +608,7 @@ func (t *wireTx) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, 
 }
 
 func (t *wireTx) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
-	rows, err := t.wc.Query(ctx, sql, args...)
-	if err != nil {
-		return NewErrorRow(err)
-	}
-	defer rows.Close()
-	if !rows.Next() {
-		if rows.Err() != nil {
-			return NewErrorRow(rows.Err())
-		}
-		return NewErrorRow(pgx.ErrNoRows)
-	}
-	sr, ok := rows.(*SliceRows)
-	if ok && sr.idx >= 0 && sr.idx < len(sr.rows) {
-		return NewSliceRow(sr.rows[sr.idx]...)
-	}
-	return NewErrorRow(pgx.ErrNoRows)
+	return querySingleRow(t.wc.Query(ctx, sql, args...))
 }
 
 type pgWireConn struct {

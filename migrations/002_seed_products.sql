@@ -46,11 +46,4 @@ VALUES
         30,
         '{"sizes":{"30":6,"32":10,"34":8,"36":6},"category":"pant","color":"khaki"}'::jsonb
     )
-ON CONFLICT (sku) DO UPDATE SET
-    name_en     = EXCLUDED.name_en,
-    name_bn     = EXCLUDED.name_bn,
-    description = EXCLUDED.description,
-    price_bdt   = EXCLUDED.price_bdt,
-    stock_qty   = EXCLUDED.stock_qty,
-    variants    = EXCLUDED.variants,
-    updated_at  = NOW();
+ON CONFLICT (sku) DO NOTHING;

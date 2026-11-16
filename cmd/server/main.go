@@ -132,21 +132,11 @@ func main() {
 	logger.Info("server shutdown complete")
 }
 
-// ThreadAdminStore abstracts the pause/resume state operations needed by admin endpoints.
-type ThreadAdminStore interface {
-	SetCustomerBotPaused(ctx context.Context, senderID string, paused bool) error
-}
-
-// RedisAdminStore abstracts the Redis pause flag operations needed by admin endpoints.
-type RedisAdminStore interface {
-	SetBotPaused(ctx context.Context, senderID string, paused bool) error
-}
-
 // NewServerMux wires all webhook, healthcheck, and protected admin HTTP routes using Go 1.23+ method patterns.
 func NewServerMux(
 	webhookHandler *webhook.Handler,
-	pgAdmin ThreadAdminStore,
-	redisAdmin RedisAdminStore,
+	pgAdmin store.PostgresPauseSetter,
+	redisAdmin store.RedisPauseSetter,
 	adminAPIKey string,
 	logger *slog.Logger,
 ) *http.ServeMux {
@@ -175,8 +165,8 @@ func NewServerMux(
 }
 
 func handleAdminThreadToggle(
-	pgAdmin ThreadAdminStore,
-	redisAdmin RedisAdminStore,
+	pgAdmin store.PostgresPauseSetter,
+	redisAdmin store.RedisPauseSetter,
 	adminAPIKey string,
 	pause bool,
 	logger *slog.Logger,
@@ -197,29 +187,16 @@ func handleAdminThreadToggle(
 			return
 		}
 
-		ctx := r.Context()
-		if redisAdmin != nil {
-			if err := redisAdmin.SetBotPaused(ctx, senderID, pause); err != nil {
-				logger.Error("admin failed updating redis bot pause state",
-					"sender_id", senderID,
-					"paused", pause,
-					"err", err,
-				)
-				writeJSON(w, http.StatusInternalServerError, map[string]any{
-					"error": "failed updating redis pause state",
-				})
-				return
-			}
-		}
-
-		if pgAdmin != nil {
-			if err := pgAdmin.SetCustomerBotPaused(ctx, senderID, pause); err != nil {
-				logger.Warn("admin failed updating postgres bot_paused flag",
-					"sender_id", senderID,
-					"paused", pause,
-					"err", err,
-				)
-			}
+		if err := store.SyncBotPauseState(r.Context(), redisAdmin, pgAdmin, senderID, pause, logger); err != nil {
+			logger.Error("admin failed updating bot pause state",
+				"sender_id", senderID,
+				"paused", pause,
+				"err", err,
+			)
+			writeJSON(w, http.StatusInternalServerError, map[string]any{
+				"error": "failed updating redis pause state",
+			})
+			return
 		}
 
 		status := "resumed"

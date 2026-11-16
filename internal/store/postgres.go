@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/pgvector/pgvector-go"
 )
@@ -264,38 +265,12 @@ func (s *PostgresStore) Pool() *pgxpool.Pool {
 	return s.pool
 }
 
-// SeedSampleProducts inserts or updates the default Bangladeshi e-commerce product catalog.
-func (s *PostgresStore) SeedSampleProducts(ctx context.Context) error {
-	const seedSQL = `
-INSERT INTO products (sku, name_en, name_bn, description, price_bdt, stock_qty, variants)
-VALUES
-    ('HD-BLK-001', 'Premium Black Fleece Hoodie', 'প্রিমিয়াম ব্ল্যাক ফ্লিস হুডি', 'Heavyweight 320 GSM winter cotton fleece hoodie in jet black.', 1250.00, 25, '{"sizes":{"M":5,"L":8,"XL":6,"XXL":6},"category":"hoodie","color":"black"}'::jsonb),
-    ('PNJ-WHT-002', 'Embroidered Cotton Panjabi', 'এমব্রয়ডারি সুতি পাঞ্জাবি', '100% breathable combed cotton white panjabi with collar embroidery.', 1850.00, 20, '{"sizes":{"40":5,"42":8,"44":7},"category":"panjabi","color":"white"}'::jsonb),
-    ('SAR-JMD-003', 'Dhakai Jamdani Saree', 'ঢাকাই জামদানি শাড়ি', 'Authentic handloom cotton-silk Dhakai Jamdani saree.', 4500.00, 10, '{"category":"saree","color":"red-gold"}'::jsonb),
-    ('TSH-NVY-004', 'Heavyweight Drop-Shoulder T-Shirt', 'ড্রপ-শোল্ডার কটন টি-শার্ট', '220 GSM organic ring-spun cotton oversized drop-shoulder t-shirt.', 650.00, 40, '{"sizes":{"M":10,"L":15,"XL":10,"XXL":5},"category":"t-shirt","color":"navy"}'::jsonb),
-    ('CHN-KHK-005', 'Stretchable Gabardine Chinos', 'স্ট্রেচেবল গ্যাবার্ডিন চিনোস প্যান্ট', 'Slim-fit cotton spandex stretchable gabardine trouser in khaki.', 1150.00, 30, '{"sizes":{"30":6,"32":10,"34":8,"36":6},"category":"pant","color":"khaki"}'::jsonb)
-ON CONFLICT (sku) DO UPDATE SET
-    name_en     = EXCLUDED.name_en,
-    name_bn     = EXCLUDED.name_bn,
-    description = EXCLUDED.description,
-    price_bdt   = EXCLUDED.price_bdt,
-    stock_qty   = EXCLUDED.stock_qty,
-    variants    = EXCLUDED.variants,
-    updated_at  = NOW()
-`
-	if _, err := s.pool.Exec(ctx, seedSQL); err != nil {
-		return fmt.Errorf("store: seed sample products: %w", err)
-	}
-	return nil
+// sqlExecer is satisfied by both *pgxpool.Pool and pgx.Tx for shared query helpers.
+type sqlExecer interface {
+	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
 }
 
-// UpsertCustomer inserts a customer record or updates non-empty profile fields on conflict.
-func (s *PostgresStore) UpsertCustomer(ctx context.Context, c Customer) error {
-	if strings.TrimSpace(c.SenderID) == "" {
-		return errors.New("store: upsert customer: sender_id is required")
-	}
-
-	const q = `
+const upsertCustomerQuery = `
 INSERT INTO customers (sender_id, full_name, phone, default_address, district, bot_paused, updated_at)
 VALUES ($1, NULLIF($2, ''), NULLIF($3, ''), NULLIF($4, ''), NULLIF($5, ''), $6, NOW())
 ON CONFLICT (sender_id) DO UPDATE SET
@@ -305,8 +280,13 @@ ON CONFLICT (sender_id) DO UPDATE SET
     district        = COALESCE(NULLIF(EXCLUDED.district, ''), customers.district),
     updated_at      = NOW()
 `
-	if _, err := s.pool.Exec(ctx, q,
-		c.SenderID,
+
+func execUpsertCustomer(ctx context.Context, exec sqlExecer, c Customer) error {
+	if strings.TrimSpace(c.SenderID) == "" {
+		return errors.New("store: upsert customer: sender_id is required")
+	}
+	if _, err := exec.Exec(ctx, upsertCustomerQuery,
+		strings.TrimSpace(c.SenderID),
 		strings.TrimSpace(c.FullName),
 		strings.TrimSpace(c.Phone),
 		strings.TrimSpace(c.DefaultAddress),
@@ -316,6 +296,29 @@ ON CONFLICT (sender_id) DO UPDATE SET
 		return fmt.Errorf("store: upsert customer %s: %w", c.SenderID, err)
 	}
 	return nil
+}
+
+// SeedSampleProducts inserts the default Bangladeshi e-commerce product catalog if not already present.
+func (s *PostgresStore) SeedSampleProducts(ctx context.Context) error {
+	const seedSQL = `
+INSERT INTO products (sku, name_en, name_bn, description, price_bdt, stock_qty, variants)
+VALUES
+    ('HD-BLK-001', 'Premium Black Fleece Hoodie', 'প্রিমিয়াম ব্ল্যাক ফ্লিস হুডি', 'Heavyweight 320 GSM winter cotton fleece hoodie in jet black.', 1250.00, 25, '{"sizes":{"M":5,"L":8,"XL":6,"XXL":6},"category":"hoodie","color":"black"}'::jsonb),
+    ('PNJ-WHT-002', 'Embroidered Cotton Panjabi', 'এমব্রয়ডারি সুতি পাঞ্জাবি', '100% breathable combed cotton white panjabi with collar embroidery.', 1850.00, 20, '{"sizes":{"40":5,"42":8,"44":7},"category":"panjabi","color":"white"}'::jsonb),
+    ('SAR-JMD-003', 'Dhakai Jamdani Saree', 'ঢাকাই জামদানি শাড়ি', 'Authentic handloom cotton-silk Dhakai Jamdani saree.', 4500.00, 10, '{"category":"saree","color":"red-gold"}'::jsonb),
+    ('TSH-NVY-004', 'Heavyweight Drop-Shoulder T-Shirt', 'ড্রপ-শোল্ডার কটন টি-শার্ট', '220 GSM organic ring-spun cotton oversized drop-shoulder t-shirt.', 650.00, 40, '{"sizes":{"M":10,"L":15,"XL":10,"XXL":5},"category":"t-shirt","color":"navy"}'::jsonb),
+    ('CHN-KHK-005', 'Stretchable Gabardine Chinos', 'স্ট্রেচেবল গ্যাবার্ডিন চিনোস প্যান্ট', 'Slim-fit cotton spandex stretchable gabardine trouser in khaki.', 1150.00, 30, '{"sizes":{"30":6,"32":10,"34":8,"36":6},"category":"pant","color":"khaki"}'::jsonb)
+ON CONFLICT (sku) DO NOTHING
+`
+	if _, err := s.pool.Exec(ctx, seedSQL); err != nil {
+		return fmt.Errorf("store: seed sample products: %w", err)
+	}
+	return nil
+}
+
+// UpsertCustomer inserts a customer record or updates non-empty profile fields on conflict.
+func (s *PostgresStore) UpsertCustomer(ctx context.Context, c Customer) error {
+	return execUpsertCustomer(ctx, s.pool, c)
 }
 
 // SetCustomerBotPaused updates the bot_paused flag in PostgreSQL for a customer thread.
@@ -624,24 +627,14 @@ func (s *PostgresStore) CreateOrderTx(ctx context.Context, req CreateOrderReques
 		_ = tx.Rollback(ctx)
 	}()
 
-	// Upsert customer inside the transaction.
-	const upsertCustomerSQL = `
-INSERT INTO customers (sender_id, full_name, phone, default_address, district, updated_at)
-VALUES ($1, $2, $3, $4, $5, NOW())
-ON CONFLICT (sender_id) DO UPDATE SET
-    full_name       = EXCLUDED.full_name,
-    phone           = EXCLUDED.phone,
-    default_address = EXCLUDED.default_address,
-    district        = EXCLUDED.district,
-    updated_at      = NOW()
-`
-	if _, err := tx.Exec(ctx, upsertCustomerSQL,
-		req.SenderID,
-		req.CustomerName,
-		normalizedPhone,
-		req.Address,
-		req.District,
-	); err != nil {
+	// Upsert customer inside the transaction using shared helper.
+	if err := execUpsertCustomer(ctx, tx, Customer{
+		SenderID:       req.SenderID,
+		FullName:       req.CustomerName,
+		Phone:          normalizedPhone,
+		DefaultAddress: req.Address,
+		District:       req.District,
+	}); err != nil {
 		return nil, fmt.Errorf("store: upsert customer in order tx: %w", err)
 	}
 

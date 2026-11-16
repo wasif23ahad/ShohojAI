@@ -3,11 +3,9 @@ package main
 import (
 	"bytes"
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -220,9 +218,7 @@ func (t *e2eTx) QueryRow(ctx context.Context, s string, a ...any) pgx.Row {
 }
 
 func signWebhookBody(secret string, body []byte) string {
-	mac := hmac.New(sha256.New, []byte(secret))
-	_, _ = mac.Write(body)
-	return "sha256=" + hex.EncodeToString(mac.Sum(nil))
+	return webhook.ComputeSignature(body, []byte(secret))
 }
 
 func TestEndToEnd_BanglishBurstToBanglaOrderAndAdminControls(t *testing.T) {
@@ -382,3 +378,152 @@ func TestEndToEnd_BanglishBurstToBanglaOrderAndAdminControls(t *testing.T) {
 		t.Errorf("expected thread to be resumed in Redis after POST /admin/threads/USER_TEST_001/resume")
 	}
 }
+
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// TestWorkflow_VerifyWebhookAndRedisDebouncer executes the verification criteria defined in
+// .agent/workflows/test-webhook.md:
+// 1. GET /webhook challenge verification returns exact challenge string "123456789".
+// 2. All 3 rapid Banglish POST /webhook requests return 200 OK in < 50ms.
+// 3. Only ONE "processing debounced turn" JSON log entry fires with msg_count: 3.
+// 4. The agent responds in natural Bangladeshi Bangla (চলিত ভাষা).
+func TestWorkflow_VerifyWebhookAndRedisDebouncer(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	const (
+		verifyToken = "workflow-verify-token"
+		appSecret   = "workflow-app-secret"
+	)
+
+	var logBuf syncBuffer
+	jsonLogger := slog.New(slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	pgHandler := newE2EPgHandler()
+	pgPool := pgxpool.NewWithHandler(pgHandler)
+	defer pgPool.Close()
+	pgStore := store.NewPostgresStore(pgPool, jsonLogger)
+
+	redisClient := redis.NewInMemoryClient()
+	redisStore := store.NewRedisStore(redisClient, jsonLogger)
+
+	msgRecorder := newE2EMessengerRecorder()
+	llm := &e2eLLM{}
+
+	orch := agent.NewOrchestrator(pgStore, redisStore, msgRecorder, nil, llm, jsonLogger)
+	debouncer := debounce.NewDebouncer(redisClient, 150*time.Millisecond, 8, orch.HandleBurst, jsonLogger)
+	defer func() { _ = debouncer.Shutdown(ctx) }()
+
+	whHandler := webhook.NewHandler(verifyToken, appSecret, debouncer, redisStore, jsonLogger)
+	mux := NewServerMux(whHandler, pgStore, redisStore, "admin-key", jsonLogger)
+
+	// Step 2 of workflow: Verify challenge endpoint returns exact challenge string
+	challengeReq := httptest.NewRequest(
+		http.MethodGet,
+		"/webhook?hub.mode=subscribe&hub.verify_token="+verifyToken+"&hub.challenge=123456789",
+		nil,
+	)
+	challengeRec := httptest.NewRecorder()
+	mux.ServeHTTP(challengeRec, challengeReq)
+	if challengeRec.Code != http.StatusOK || challengeRec.Body.String() != "123456789" {
+		t.Fatalf("expected 200 OK with challenge 123456789, got status=%d body=%q",
+			challengeRec.Code, challengeRec.Body.String())
+	}
+
+	// Step 4 of workflow: Simulate rapid 3-message Banglish burst
+	msgs := []struct {
+		mid  string
+		text string
+	}{
+		{"mid.test.1", "vai"},
+		{"mid.test.2", "ei black hoodie ta ache?"},
+		{"mid.test.3", "dhakar vitore delivery charge koto?"},
+	}
+
+	for _, m := range msgs {
+		body := []byte(fmt.Sprintf(`{
+			"object": "page",
+			"entry": [{
+				"id": "PAGE_123",
+				"time": 1700000000000,
+				"messaging": [{
+					"sender": {"id": "USER_TEST_001"},
+					"recipient": {"id": "PAGE_123"},
+					"timestamp": 1700000000001,
+					"message": {"mid": %q, "text": %q}
+				}]
+			}]
+		}`, m.mid, m.text))
+
+		req := httptest.NewRequest(http.MethodPost, "/webhook", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set(webhook.SignatureHeader, signWebhookBody(appSecret, body))
+		rec := httptest.NewRecorder()
+
+		start := time.Now()
+		mux.ServeHTTP(rec, req)
+		elapsed := time.Since(start)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s returned status %d, want 200 OK", m.mid, rec.Code)
+		}
+		if elapsed >= 50*time.Millisecond {
+			t.Errorf("%s took %v, expected < 50ms", m.mid, elapsed)
+		}
+		time.Sleep(30 * time.Millisecond)
+	}
+
+	// Step 5 of workflow: Confirm natural Bangladeshi Bangla reply and single debounced log entry
+	var banglaReply string
+	select {
+	case banglaReply = <-msgRecorder.doneCh:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timed out waiting for debounced Bangla reply")
+	}
+
+	// Wait briefly to ensure no extra timer flushes occur
+	time.Sleep(200 * time.Millisecond)
+
+	logLines := strings.Split(strings.TrimSpace(logBuf.String()), "\n")
+	debouncedTurnCount := 0
+	for _, line := range logLines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var entry map[string]any
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			t.Fatalf("invalid JSON log line %q: %v", line, err)
+		}
+		if entry["msg"] == "processing debounced turn" {
+			debouncedTurnCount++
+			if count, ok := entry["msg_count"].(float64); !ok || int(count) != 3 {
+				t.Errorf("expected msg_count=3 in JSON log, got %v", entry["msg_count"])
+			}
+		}
+	}
+
+	if debouncedTurnCount != 1 {
+		t.Fatalf("expected exactly 1 'processing debounced turn' log entry, got %d\nLogs:\n%s",
+			debouncedTurnCount, logBuf.String())
+	}
+
+	if !strings.Contains(banglaReply, "আপনি") || !strings.Contains(banglaReply, "৭০ টাকা") {
+		t.Errorf("expected natural Bangladeshi Bangla reply in আপনি register, got %q", banglaReply)
+	}
+}
+

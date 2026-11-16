@@ -3,9 +3,6 @@ package webhook
 import (
 	"bytes"
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -53,9 +50,7 @@ func (p *stubPauseChecker) IsBotPaused(_ context.Context, senderID string) (bool
 }
 
 func signBody(secret string, body []byte) string {
-	mac := hmac.New(sha256.New, []byte(secret))
-	_, _ = mac.Write(body)
-	return "sha256=" + hex.EncodeToString(mac.Sum(nil))
+	return ComputeSignature(body, []byte(secret))
 }
 
 func TestHandler_Verify(t *testing.T) {
