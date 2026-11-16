@@ -22,11 +22,11 @@
 - [x] Implement `internal/messenger/media.go` to fetch image attachments and transcribe `audio` voice notes.
 
 ## Phase 5: AI Orchestrator & Bangladeshi Business Tools (`internal/agent/`)
-- [ ] Implement `internal/agent/prompt.go` containing the Bangladeshi business Bangla (*চলিত ভাষা*, *আপনি* register) system prompt and Banglish few-shot examples.
-- [ ] Implement `internal/agent/tools.go` wiring `search_products`, `check_stock`, `calculate_delivery_fee`, `create_order`, and `escalate_to_human`.
-- [ ] Implement `internal/agent/orchestrator.go` handling the multi-turn tool-calling loop, query embeddings, and fallback Bangla error replies.
+- [x] Implement `internal/agent/prompt.go` containing the Bangladeshi business Bangla (*চলিত ভাষা*, *আপনি* register) system prompt and Banglish few-shot examples.
+- [x] Implement `internal/agent/tools.go` wiring `search_products`, `check_stock`, `calculate_delivery_fee`, `create_order`, and `escalate_to_human`.
+- [x] Implement `internal/agent/orchestrator.go` handling the multi-turn tool-calling loop, query embeddings, and fallback Bangla error replies.
 
 ## Phase 6: Server Wiring, Admin Controls & End-to-End Verification
-- [ ] Wire all components in `cmd/server/main.go` with graceful HTTP + debouncer shutdown.
-- [ ] Add protected admin endpoints (`POST /admin/threads/{sender_id}/pause` and `/resume`) secured by `ADMIN_API_KEY`.
-- [ ] Seed sample Bangladeshi e-commerce products and run `/test-webhook` to verify end-to-end Banglish burst -> Bangla order flow.
+- [x] Wire all components in `cmd/server/main.go` with graceful HTTP + debouncer shutdown.
+- [x] Add protected admin endpoints (`POST /admin/threads/{sender_id}/pause` and `/resume`) secured by `ADMIN_API_KEY`.
+- [x] Seed sample Bangladeshi e-commerce products and run `/test-webhook` to verify end-to-end Banglish burst -> Bangla order flow.
